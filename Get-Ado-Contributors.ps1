@@ -17,7 +17,7 @@ $ErrorActionPreference = 'Stop'
 # ====== CONFIG ========
 # ======================
 # Organization URL (REQUIRED)
-$OrgUrl = "https://dev.azure.com/akzonobeldw"
+$OrgUrl = "https://dev.azure.com/Your org here"
 
 # Personal Access Token (REQUIRED) – paste between quotes
 # PAT must have scopes: Code (Read) + Project and Team (Read)
@@ -25,7 +25,7 @@ $Pat = "PAT Token should be here"
 
 # Specific projects (comma-separated). Defaulted to your request.
 # Leave empty "" to scan ALL projects you can access.
-$Projects = "Cloud and Data Competence Center"
+$Projects = "Enter the project you want"
 
 # Date window (ISO yyyy-MM-dd)
 $FromDate = "2025-10-01"
