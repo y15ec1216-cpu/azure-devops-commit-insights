@@ -1,0 +1,159 @@
+🧭 How to Use (Step-by-Step)
+Prerequisites (both Windows & macOS)
+
+Create an Azure DevOps PAT (Personal Access Token)
+
+Scopes required: Code (Read) and Project and Team (Read)
+
+Copy the token somewhere safe (you’ll paste it into the script when running).
+
+Know your Org URL
+
+Format: https://dev.azure.com/<your-org>
+
+Example: https://dev.azure.com/akzonobeldw
+
+⚠️ Don’t leave it as https://dev.azure.com/$—replace with your actual org.
+
+🪟 Windows – with PowerShell ISE (and PowerShell 7 optional)
+
+PowerShell ISE runs Windows PowerShell 5.1. It’s fine for this script.
+If you prefer the latest PowerShell 7, you can install it too (recommended), but you’ll run it in pwsh or VS Code (ISE doesn’t host PS7).
+
+1) Install PowerShell ISE (if not already installed)
+
+Windows 10/11 (Optional Features UI):
+Settings → Apps → Optional Features → View features → search “PowerShell ISE” → Install.
+
+Via PowerShell (Windows 10/11):
+
+Get-WindowsCapability -Online | Where-Object Name -like 'Microsoft.Windows.PowerShell.ISE*'
+Add-WindowsCapability -Online -Name Microsoft.Windows.PowerShell.ISE~~~~0.0.1.0
+
+
+Windows Server:
+
+Install-WindowsFeature PowerShell-ISE
+
+(Optional) Install PowerShell 7
+
+winget (Windows 10/11):
+
+winget install --id Microsoft.PowerShell -e
+
+
+After install, you’ll have pwsh (PS7) alongside Windows PowerShell (5.1).
+You can run this script from either.
+
+2) Download the script
+
+Save Get-Ado-Contributors.ps1 into a folder, e.g., C:\Tools\azure-devops-commit-insights.
+
+3) Update the CONFIG section (top of the script)
+
+In ISE (or any editor), set:
+
+$OrgUrl   = "https://dev.azure.com/<your-org>"
+$Pat      = "YOUR_PAT"                 # or leave blank to be prompted securely
+$Projects = "Cloud and Data Competence Center"  # or "" for ALL projects
+$FromDate = "2025-10-01"
+$ToDate   = "2025-11-01"
+$OutDir   = "."
+
+
+Tip: If you don’t want your PAT in the file, leave $Pat = "". The script will prompt you securely.
+
+4) Unblock the script (if downloaded from the internet)
+Unblock-File .\Get-Ado-Contributors.ps1
+
+5) Run it
+
+Windows PowerShell ISE (5.1):
+
+Open ISE → File → Open → Get-Ado-Contributors.ps1 → Press F5 (Run).
+
+Windows PowerShell or PowerShell 7 terminal:
+
+# (Optional, session-only) allow script execution
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+
+# Run
+powershell -ExecutionPolicy Bypass -File .\Get-Ado-Contributors.ps1
+# or with PS7:
+pwsh -File .\Get-Ado-Contributors.ps1
+
+6) Review outputs
+
+The script prints the generated CSV file paths at the end, like:
+
+ado_commits_<timestamp>.csv
+
+ado_unique_contributors_<timestamp>.csv
+
+ado_unique_committers_<timestamp>.csv
+
+plus project/org breakdowns
+
+Open them in Excel/Power BI/etc.
+
+🍎 macOS – using PowerShell 7 (pwsh)
+1) Install PowerShell 7 with Homebrew
+brew update
+brew install --cask powershell
+
+
+Then start it:
+
+pwsh
+
+2) Download the script
+
+Put Get-Ado-Contributors.ps1 in a working folder, e.g., ~/dev/azure-devops-commit-insights.
+
+3) Update the CONFIG section
+
+Open in any editor (VS Code recommended):
+
+$OrgUrl   = "https://dev.azure.com/<your-org>"
+$Pat      = "YOUR_PAT"   # or leave blank to be prompted
+$Projects = ""           # leave empty to scan ALL projects
+$FromDate = "2025-10-01"
+$ToDate   = "2025-11-01"
+$OutDir   = "."
+
+4) Run it with pwsh
+
+From the folder containing the script:
+
+pwsh -File ./Get-Ado-Contributors.ps1
+
+
+macOS/Linux don’t use Windows execution policies, so no Set-ExecutionPolicy needed.
+
+5) Review outputs
+
+CSV files will appear in your $OutDir (default current folder).
+
+✅ Quick sanity checks
+
+Org URL is a real org (e.g., https://dev.azure.com/akzonobeldw), not a placeholder.
+
+PAT has Code (Read) and Project and Team (Read) scopes.
+
+Date range actually has commits.
+
+If $Projects is set, the names match exactly (or leave it empty to scan all accessible projects).
+
+🧯 Troubleshooting
+Symptom	Likely Cause	Fix
+401 Unauthorized / auth errors	PAT expired/invalid or wrong scopes	Create a new PAT with required scopes and paste again
+No projects found or access denied	Wrong $OrgUrl or insufficient permissions	Use correct Org URL and ensure you can view projects in Azure DevOps
+Empty CSVs	No commits in date window or project filter mismatch	Widen date range or clear $Projects to scan all
+Invoke-WebRequest error (Windows)	Corporate proxy / TLS settings	Try PowerShell 7 (pwsh) which uses newer HTTP stack; or set proxy env vars
+🔐 PAT safety tips
+
+Prefer prompting (leave $Pat = "") on shared machines.
+
+If you commit this repo publicly, never commit real PATs.
+
+Consider using an environment variable and reading it in the script if you later automate.
