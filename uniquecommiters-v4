@@ -1,0 +1,306 @@
+<# ======================================================================
+  Get-Ado-Committers-ByOrg.ps1
+  Purpose: For each Azure DevOps organization you specify, count the
+           TOTAL number of UNIQUE committers (who pushed) in the date window.
+  Output: Single CSV/table with: Organization, TotalUniqueCommitters
+
+  Usage:
+    1) Fill $OrgList with your orgs.
+    2) Put PATs in $OrgPatMap (per org) OR set $DefaultPat for all.
+       (PAT scopes needed: Code(Read) + Project and Team(Read))
+    3) Run:
+       powershell -ExecutionPolicy Bypass -File .\Get-Ado-Committers-ByOrg.ps1
+====================================================================== #>
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+# ======================
+# ====== CONFIG ========
+# ======================
+# All organizations (org segment as in https://dev.azure.com/<org>)
+$OrgList = @(
+  'akzonobeldw',
+  'onehub-akzonobel',
+  'akzonobelflourish',
+  'akzonobelecommerce',
+  'akzonobel-dataanalyticsbenelux',
+  'admBhavarS',
+  'akzonobelgbs',
+  'akzonobeliot',
+  'akzonobelisc',
+  'akzonobelpc',
+  'akzonobelprojects',
+  'ANOnePIM',
+  'akzonobeldgtmarketing',
+  'akzonobel-im',
+  'akzonobel-innovate',
+  'akzonobeldata',
+  'AkzoNobelChina'
+)
+
+# Map org -> PAT (leave blank to use $DefaultPat or you’ll be prompted at runtime)
+$OrgPatMap = @{
+  'akzonobeldw'                    = ''
+  'onehub-akzonobel'               = ''
+  'akzonobelflourish'              = ''
+  'akzonobelecommerce'             = ''
+  'akzonobel-dataanalyticsbenelux' = ''
+  'admBhavarS'                     = ''
+  'akzonobelgbs'                   = ''
+  'akzonobeliot'                   = ''
+  'akzonobelisc'                   = ''
+  'akzonobelpc'                    = ''
+  'akzonobelprojects'              = ''
+  'ANOnePIM'                       = ''
+  'akzonobeldgtmarketing'          = ''
+  'akzonobel-im'                   = ''
+  'akzonobel-innovate'             = ''
+  'akzonobeldata'                  = ''
+  'AkzoNobelChina'                 = ''
+}
+
+# If all orgs share one PAT, set here; empty -> prompt for each missing
+$DefaultPat = ""
+
+# Date window (ISO yyyy-MM-dd)
+$FromDate = (Get-Date).AddMonths(-6).ToString('yyyy-MM-dd')
+$ToDate   = (Get-Date).ToString('yyyy-MM-dd')   # or "" to disable upper bound
+
+# Output directory (safe defaults)
+$OutDir = ""   # leave blank to default next to script or Downloads\AdoReports
+if ([string]::IsNullOrWhiteSpace($OutDir)) { $OutDir = "$PSScriptRoot" }
+if ([string]::IsNullOrWhiteSpace($OutDir)) { $OutDir = Join-Path $env:USERPROFILE "Downloads\AdoReports" }
+if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir | Out-Null }
+
+# ======================
+# ===== HELPERS ========
+# ======================
+function New-AuthHeaderFromPat {
+  param([Parameter(Mandatory=$true)][string] $Token)
+  $basic = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$Token"))
+  return @{ Authorization = "Basic $basic" }
+}
+
+function Invoke-AdoGet {
+  param(
+    [Parameter(Mandatory=$true)][string] $Url,
+    [hashtable] $Headers,
+    [int] $MaxRetry = 3
+  )
+  for ($i=0; $i -lt $MaxRetry; $i++) {
+    try {
+      return Invoke-RestMethod -Method GET -Uri $Url -Headers $Headers -ErrorAction Stop
+    } catch {
+      $code = $null
+      if ($_.Exception.PSObject.Properties.Name -contains 'Response' -and $_.Exception.Response) {
+        $code = $_.Exception.Response.StatusCode.Value__
+      }
+      if ($code -eq 401 -or $code -eq 403) { throw "ACCESS_DENIED" }
+      if ($code -eq 404)                    { throw "NOT_FOUND" }
+      if ($i -ge $MaxRetry - 1) { throw }
+      Start-Sleep -Seconds (2 * ($i + 1))
+    }
+  }
+}
+
+function Test-OrgAndToken {
+  param([string]$OrgUrl, [hashtable]$Headers)
+  $url = "$OrgUrl/_apis/projects?`$top=1&api-version=7.1-preview.4"
+  $null = Invoke-AdoGet -Url $url -Headers $Headers
+}
+
+function Get-AdoProjects {
+  param([string]$OrgUrl, [hashtable]$Headers)
+  $apiVer = "7.1-preview.4"
+  $all = @()
+  $cont = $null
+  do {
+    $url = if ($cont) {
+      "$OrgUrl/_apis/projects?continuationToken=$([uri]::EscapeDataString($cont))&api-version=$apiVer"
+    } else {
+      "$OrgUrl/_apis/projects?api-version=$apiVer"
+    }
+    $resp = Invoke-WebRequest -Method GET -Uri $url -Headers $Headers -ErrorAction Stop
+    $json = $resp.Content | ConvertFrom-Json
+    if ($json.value) { $all += $json.value }
+    $cont = $resp.Headers['x-ms-continuationtoken']
+  } while ($cont)
+  return $all
+}
+
+# Returns: @{ Repos = <array>; Access = "OK"|"ACCESS_DENIED"|"ERROR" }
+function Get-AdoRepos {
+  param([string]$OrgUrl, [hashtable]$Headers, [string]$ProjectName)
+  $apiVer = "7.1-preview.1"
+  $all = @()
+  $cont = $null
+  try {
+    do {
+      $url = if ($cont) {
+        "$OrgUrl/$($ProjectName)/_apis/git/repositories?continuationToken=$([uri]::EscapeDataString($cont))&api-version=$apiVer"
+      } else {
+        "$OrgUrl/$($ProjectName)/_apis/git/repositories?api-version=$apiVer"
+      }
+      $resp = Invoke-WebRequest -Method GET -Uri $url -Headers $Headers -ErrorAction Stop
+      $json = $resp.Content | ConvertFrom-Json
+      if ($json.value) { $all += $json.value }
+      $cont = $resp.Headers['x-ms-continuationtoken']
+    } while ($cont)
+    return [pscustomobject]@{ Repos = $all; Access = "OK" }
+  } catch {
+    if ($_.Exception.PSObject.Properties.Name -contains 'Response') {
+      $code = $_.Exception.Response.StatusCode.Value__
+      if ($code -eq 401 -or $code -eq 403) {
+        Write-Host "  ⚠ No access to project: $ProjectName — skipping" -ForegroundColor Yellow
+        return [pscustomobject]@{ Repos = @(); Access = "ACCESS_DENIED" }
+      }
+    }
+    Write-Host "  ⚠ Error listing repos for project: $ProjectName — skipping" -ForegroundColor Yellow
+    return [pscustomobject]@{ Repos = @(); Access = "ERROR" }
+  }
+}
+
+# StrictMode-safe property getter
+function Get-PropOrNull {
+  param($obj, [string]$name)
+  if ($null -eq $obj) { return $null }
+  $p = $obj.PSObject.Properties[$name]
+  if ($null -ne $p) { return $p.Value } else { return $null }
+}
+
+function Get-AdoCommits {
+  param(
+    [string] $OrgUrl,
+    [hashtable] $Headers,
+    [string] $ProjectName,
+    [string] $RepoId,
+    [string] $FromDate,
+    [string] $ToDate,
+    [string] $RepoName = $null
+  )
+  $apiVer = "7.1-preview.1"
+  $top  = 200
+  $skip = 0
+  $results = @()
+
+  do {
+    $url = "$OrgUrl/$($ProjectName)/_apis/git/repositories/$RepoId/commits" +
+           "?searchCriteria.fromDate=$([uri]::EscapeDataString($FromDate))" +
+           "&`$top=$top&`$skip=$skip&api-version=$apiVer"
+    try {
+      $resp = Invoke-AdoGet -Url $url -Headers $Headers
+    } catch {
+      $repoLabel = if ([string]::IsNullOrWhiteSpace($RepoName)) { $RepoId } else { $RepoName }
+      if ($_.Exception -eq "ACCESS_DENIED") {
+        Write-Host ("    ⚠ No access to repo: {0} ({1}) — skipping" -f $repoLabel, $ProjectName) -ForegroundColor Yellow
+        return @()
+      }
+      if ($_.Exception -eq "NOT_FOUND") {
+        Write-Host ("    ⚠ Repo not found (deleted/renamed?): {0} ({1}) — skipping" -f $repoLabel, $ProjectName) -ForegroundColor Yellow
+        return @()
+      }
+      Write-Host ("    ⚠ Error fetching commits for repo {0} ({1}) — skipping" -f $repoLabel, $ProjectName) -ForegroundColor Yellow
+      return @()
+    }
+
+    $batch = $resp.value
+    if ($ToDate) {
+      $to = Get-Date $ToDate
+      # committer.date reflects "who pushed"
+      $batch = $batch | Where-Object { (Get-Date $_.committer.date) -le $to }
+    }
+    if ($batch) { $results += $batch }
+
+    $skip += $top
+    $more = ($resp -and $resp.value -and $resp.value.Count -ge $top)
+  } while ($more)
+
+  return $results
+}
+
+# ======================
+# ===== MAIN FLOW ======
+# ======================
+$ts = Get-Date -Format "yyyyMMdd_HHmmss"
+$summary = New-Object System.Collections.Generic.List[object]
+
+foreach ($org in $OrgList) {
+  $orgUrl = "https://dev.azure.com/$org"
+
+  # Choose PAT: org-specific > default > prompt
+  $pat = $OrgPatMap[$org]
+  if ([string]::IsNullOrWhiteSpace($pat)) { $pat = $DefaultPat }
+  if ([string]::IsNullOrWhiteSpace($pat)) {
+    $pat = Read-Host -Prompt "Enter PAT for org '$org'" -MaskInput
+  }
+  $headers = New-AuthHeaderFromPat -Token $pat
+
+  Write-Host "`n=== Organization: $org ===" -ForegroundColor Cyan
+  try {
+    Test-OrgAndToken -OrgUrl $orgUrl -Headers $headers
+  } catch {
+    Write-Host "  ⚠ Cannot access org $org (bad PAT or no rights) — counting as 0" -ForegroundColor Yellow
+    $summary.Add([pscustomobject]@{ Organization = $org; TotalUniqueCommitters = 0 })
+    continue
+  }
+
+  $projects = Get-AdoProjects -OrgUrl $orgUrl -Headers $headers
+  if (-not $projects) {
+    Write-Host "  ⚠ No accessible projects — counting as 0" -ForegroundColor Yellow
+    $summary.Add([pscustomobject]@{ Organization = $org; TotalUniqueCommitters = 0 })
+    continue
+  }
+
+  $commitRows = New-Object System.Collections.Generic.List[object]
+
+  foreach ($proj in $projects) {
+    $projName = $proj.name
+    Write-Host "  Project: $projName" -ForegroundColor Green
+
+    $reposResult = Get-AdoRepos -OrgUrl $orgUrl -Headers $headers -ProjectName $projName
+    if ($reposResult.Access -ne "OK") { continue }
+    $repos = $reposResult.Repos
+    if (-not $repos) { continue }
+
+    foreach ($repo in $repos) {
+      Write-Host ("    Repo: {0}" -f $repo.name) -ForegroundColor DarkYellow
+      $commits = Get-AdoCommits -OrgUrl $orgUrl -Headers $headers `
+                                -ProjectName $projName -RepoId $repo.id `
+                                -FromDate $FromDate -ToDate $ToDate `
+                                -RepoName $repo.name
+      foreach ($c in $commits) {
+        # StrictMode-safe reads (handle missing name/email/date gracefully)
+        $commitRows.Add([pscustomobject]@{
+          CommitterName  = Get-PropOrNull $c.committer 'name'
+          CommitterEmail = Get-PropOrNull $c.committer 'email'
+          CommitterDate  = Get-PropOrNull $c.committer 'date'
+        })
+      }
+    }
+  }
+
+  # Deduplicate & count committers org-wide (skip rows with no name+email)
+  $orgCommitters = $commitRows |
+    Where-Object { $_.CommitterEmail -or $_.CommitterName } |
+    Group-Object CommitterEmail, CommitterName
+
+  $uniqueCount = ($orgCommitters | Measure-Object).Count
+  $summary.Add([pscustomobject]@{
+    Organization          = $org
+    TotalUniqueCommitters = $uniqueCount
+  })
+
+  Write-Host ("  → Unique committers: {0}" -f $uniqueCount) -ForegroundColor Cyan
+}
+
+# ======================
+# ======= OUTPUT =======
+# ======================
+$summaryCsv = Join-Path $OutDir ("ado_committers_by_org_{0}.csv" -f $ts)
+$summary | Sort-Object Organization | Export-Csv -Path $summaryCsv -NoTypeInformation -Encoding UTF8
+
+Write-Host "`n==============================" -ForegroundColor Cyan
+Write-Host "Summary CSV: $summaryCsv" -ForegroundColor Green
+Write-Host ""
+$summary | Sort-Object Organization | Format-Table -AutoSize
